@@ -1,8 +1,8 @@
-"""Relisto: archivio locale dei tuoi annunci Vinted (foto, testi, prezzo e
-dettagli), da riusare quando rimetti in vendita un articolo.
+"""Relisto: a local archive of your Vinted listings (photos, texts, price and
+details), ready to reuse when you put an item up for sale again.
 
-Creato da lilsusanoo - https://dondo.info
-Progetto indipendente, non affiliato a Vinted.
+Created by lilsusanoo - https://dondo.info
+Independent project, not affiliated with Vinted.
 """
 import os
 import json
@@ -12,6 +12,7 @@ import sys
 import html
 import shutil
 import ctypes
+import locale
 import platform
 import subprocess
 import threading
@@ -28,13 +29,13 @@ from tkinter import messagebox
 from PIL import Image, ImageDraw, ImageOps, ImageTk
 import customtkinter as ctk
 
-# Opzionale: cestino di sistema (pip install send2trash)
+# Optional: system trash (pip install send2trash)
 try:
     from send2trash import send2trash
 except Exception:
     send2trash = None
 
-# --- PERCORSI MAC E WINDOWS (cartella di lavoro) ---
+# --- MAC AND WINDOWS PATHS (working folder) ---
 if getattr(sys, 'frozen', False):
     percorso_eseguibile = os.path.dirname(sys.executable)
     if sys.platform == "darwin" and ".app" in percorso_eseguibile:
@@ -46,39 +47,47 @@ else:
 
 os.chdir(base_dir)
 
-ANNUNCI_DIR = os.path.join(base_dir, "Annunci")
-os.makedirs(ANNUNCI_DIR, exist_ok=True)
+LISTINGS_DIR = os.path.join(base_dir, "Listings")
 
-# Sposta nella nuova sottocartella gli annunci creati con la versione precedente
+# Older versions used an Italian folder name: rename it once
+_OLD_LISTINGS_DIR = os.path.join(base_dir, "Annunci")
+if os.path.isdir(_OLD_LISTINGS_DIR) and not os.path.exists(LISTINGS_DIR):
+    try:
+        os.rename(_OLD_LISTINGS_DIR, LISTINGS_DIR)
+    except Exception:
+        pass
+os.makedirs(LISTINGS_DIR, exist_ok=True)
+
+# Move listings created by very old versions into the listings folder
 for _name in os.listdir(base_dir):
     _src = os.path.join(base_dir, _name)
     if _name.startswith("Output_") and os.path.isdir(_src):
-        _dst = os.path.join(ANNUNCI_DIR, _name)
+        _dst = os.path.join(LISTINGS_DIR, _name)
         if not os.path.exists(_dst):
             try:
                 shutil.move(_src, _dst)
             except Exception:
                 pass
 
-# --- BARRA DELLE APPLICAZIONI WINDOWS ---
+# --- WINDOWS TASKBAR ---
 if platform.system() == "Windows":
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('relisto.app.1')
     except Exception:
         pass
 
-# --- CONFIGURAZIONE CORE ---
+# --- CORE SETTINGS ---
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
 }
 
-MIN_IMAGE_SIZE = 300     # scarta avatar e icone
+MIN_IMAGE_SIZE = 300     # skip avatars and icons
 MAX_IMAGES = 10
 
 
 def make_session():
-    """Sessione con retry automatici su errori temporanei."""
+    """HTTP session with automatic retries on temporary errors."""
     s = requests.Session()
     retry = Retry(
         total=3,
@@ -94,7 +103,7 @@ def make_session():
 
 
 def normalize_vinted_url(raw):
-    """Ritorna un URL https valido di Vinted oppure None."""
+    """Return a valid https Vinted URL, or None."""
     raw = raw.strip()
     if not raw:
         return None
@@ -115,11 +124,11 @@ def extract_item_id(url):
 
 
 def clean_filename(title):
-    """Mantiene lettere accentate e numeri, toglie il resto."""
+    """Keep letters (accented too) and digits, drop the rest."""
     clean_t = title.replace("| Vinted", "").strip()
     safe_title = re.sub(r'[^\w\s-]', '', clean_t, flags=re.UNICODE)
     safe_title = safe_title.strip().replace(" ", "_")[:50].strip("_")
-    return safe_title or "senza_titolo"
+    return safe_title or "untitled"
 
 
 def display_name_from_folder(folder_name):
@@ -133,33 +142,40 @@ def display_name_from_folder(folder_name):
 
 
 def list_photos(folder_path):
-    files = [f for f in os.listdir(folder_path) if f.startswith("foto_") and f.lower().endswith(".jpg")]
+    # "photo_N.jpg" (current) or "foto_N.jpg" (older versions)
+    files = [f for f in os.listdir(folder_path)
+             if f.startswith(("photo_", "foto_")) and f.lower().endswith(".jpg")]
     files.sort(key=lambda x: int(re.search(r'\d+', x).group()) if re.search(r'\d+', x) else 0)
     return files
 
 
 def read_info(folder_path):
-    """Legge info.txt e ritorna (titolo, descrizione)."""
+    """Read info.txt and return (title, description).
+
+    Supports both the current English markers and the Italian ones
+    written by older versions (TITOLO/DESCRIZIONE).
+    """
     info_path = os.path.join(folder_path, "info.txt")
     if not os.path.exists(info_path):
         return "", ""
     with open(info_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    if "DESCRIZIONE:\n" in content:
-        title_section, desc = content.split("DESCRIZIONE:\n", 1)
-        title = title_section.split("TITOLO:\n")[-1].strip() if "TITOLO:\n" in title_section else title_section.strip()
-        return title, desc.strip()
-    return content.replace("TITOLO:\n", "").strip(), ""
+    for title_mark, desc_mark in (("TITLE:\n", "DESCRIPTION:\n"), ("TITOLO:\n", "DESCRIZIONE:\n")):
+        if desc_mark in content:
+            title_section, desc = content.split(desc_mark, 1)
+            title = title_section.split(title_mark)[-1].strip() if title_mark in title_section else title_section.strip()
+            return title, desc.strip()
+    return content.replace("TITLE:\n", "").replace("TITOLO:\n", "").strip(), ""
 
 
 def write_info(folder_path, title, desc):
     with open(os.path.join(folder_path, "info.txt"), "w", encoding="utf-8") as f:
-        f.write(f"TITOLO:\n{title}\n\nDESCRIZIONE:\n{desc}")
+        f.write(f"TITLE:\n{title}\n\nDESCRIPTION:\n{desc}")
 
 
 class MetaParser(HTMLParser):
-    """Legge i meta tag in modo robusto (qualsiasi ordine di attributi e virgolette)."""
+    """Read meta tags robustly (any attribute order or quoting)."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -193,15 +209,15 @@ def parse_page_meta(page_html):
         pass
     title = parser.meta.get("og:title") or parser.page_title or "Item_Unknown"
     desc = parser.meta.get("og:description") or parser.meta.get("description") or ""
-    # html.unescape per sicurezza (es. testi con doppia codifica)
+    # html.unescape just in case (e.g. double-encoded text)
     return html.unescape(title).replace("| Vinted", "").strip(), html.unescape(desc).strip()
 
 
 def find_profile_photo_ids(page_html):
-    """ID delle foto profilo (venditore ecc.).
+    """IDs of profile pictures (seller etc.).
 
-    Nei dati della pagina le foto dell'articolo stanno in "photos":[...],
-    mentre l'avatar di un utente è un singolo oggetto "photo":{...}.
+    In the page data the item photos live in "photos":[...], while a
+    user's avatar is a single "photo":{...} object.
     """
     text = page_html.replace('\\"', '"')
     return set(re.findall(
@@ -209,13 +225,16 @@ def find_profile_photo_ids(page_html):
     ))
 
 
-DETAILS_FILE = "dettagli.json"
+DETAILS_FILE = "details.json"
+OLD_DETAILS_FILE = "dettagli.json"   # written by older (Italian) versions
+OLD_DETAIL_KEYS = {"prezzo": "price", "valuta": "currency", "marca": "brand",
+                   "taglia": "size", "condizioni": "condition", "colore": "color"}
 CURRENCY_SYMBOLS = {"EUR": "€", "GBP": "£", "USD": "$", "PLN": "zł", "CZK": "Kč",
                     "SEK": "kr", "DKK": "kr", "HUF": "Ft", "RON": "lei"}
 
 
 def _json_str(value):
-    """Decodifica eventuali escape JSON (es. \\u0026)."""
+    """Decode JSON escapes, if any (e.g. \\u0026)."""
     try:
         return json.loads(f'"{value}"')
     except Exception:
@@ -223,20 +242,20 @@ def _json_str(value):
 
 
 def parse_item_details(page_html):
-    """Prezzo, marca, taglia, condizioni e colore dai dati della pagina."""
+    """Price, brand, size, condition and colour from the page data."""
     text = page_html.replace('\\"', '"')
     details = {}
 
     m = re.search(r'"priceCurrency"\s*:\s*"([A-Z]{3})"\s*,\s*"price"\s*:\s*"?([\d.]+)', text)
     if m:
-        details["valuta"], details["prezzo"] = m.group(1), m.group(2)
+        details["currency"], details["price"] = m.group(1), m.group(2)
     else:
         m = re.search(r'"price"\s*:\s*\{\s*"amount"\s*:\s*"([\d.]+)"\s*,\s*"currency_code"\s*:\s*"([A-Z]{3})"', text)
         if m:
-            details["prezzo"], details["valuta"] = m.group(1), m.group(2)
+            details["price"], details["currency"] = m.group(1), m.group(2)
 
-    fields = {"brand": "marca", "size": "taglia", "size_familiar": "taglia",
-              "status": "condizioni", "color": "colore"}
+    fields = {"brand": "brand", "size": "size", "size_familiar": "size",
+              "status": "condition", "color": "color"}
     for code, value in re.findall(
         r'"code"\s*:\s*"(brand|size|size_familiar|status|color)"\s*,\s*"data"\s*:\s*\{[^{}]*?"value"\s*:\s*"([^"]*)"',
         text
@@ -245,37 +264,44 @@ def parse_item_details(page_html):
         if value and key not in details:
             details[key] = _json_str(value).strip()
 
-    if "marca" not in details:
+    if "brand" not in details:
         m = re.search(r'"brand"\s*:\s*\{\s*"@type"\s*:\s*"Brand"\s*,\s*"name"\s*:\s*"([^"]+)"', text)
         if m:
-            details["marca"] = _json_str(m.group(1)).strip()
+            details["brand"] = _json_str(m.group(1)).strip()
     return details
 
 
 def format_price(details):
-    amount = details.get("prezzo")
+    amount = details.get("price")
     if not amount:
         return ""
+    currency = details.get("currency", "EUR")
+    symbol = CURRENCY_SYMBOLS.get(currency, currency)
     try:
-        value = f"{float(amount):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+        value = f"{float(amount):,.2f}"
     except ValueError:
         value = amount
-    currency = details.get("valuta", "EUR")
-    return f"{value} {CURRENCY_SYMBOLS.get(currency, currency)}"
+    if currency in ("EUR", "GBP", "USD"):
+        return f"{symbol}{value}"
+    return f"{value} {symbol}"
 
 
 def details_summary(details):
-    """Es. "Nike · L · Ottime"."""
-    return " · ".join(details[k] for k in ("marca", "taglia", "condizioni") if details.get(k))
+    """E.g. "Nike · L · Very good"."""
+    return " · ".join(details[k] for k in ("brand", "size", "condition") if details.get(k))
 
 
 def read_details(folder_path):
-    try:
-        with open(os.path.join(folder_path, DETAILS_FILE), "r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except Exception:
-        return {}
+    """details.json, or the dettagli.json written by older versions."""
+    for name in (DETAILS_FILE, OLD_DETAILS_FILE):
+        try:
+            with open(os.path.join(folder_path, name), "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+        if isinstance(data, dict):
+            return {OLD_DETAIL_KEYS.get(k, k): v for k, v in data.items()}
+    return {}
 
 
 def write_details(folder_path, details):
@@ -284,7 +310,7 @@ def write_details(folder_path, details):
 
 
 def make_card_image(path, size, radius, bg):
-    """Foto ritagliata a riempimento con angoli superiori arrotondati."""
+    """Photo cropped to fill, with rounded top corners."""
     with Image.open(path) as im:
         im = ImageOps.exif_transpose(im)
         photo = ImageOps.fit(im.convert("RGB"), size, method=Image.Resampling.LANCZOS)
@@ -298,23 +324,23 @@ def make_card_image(path, size, radius, bg):
 
 
 def validate_image(path):
-    """Controlla che il file sia un'immagine valida e abbastanza grande."""
+    """Check the file is a valid, large enough image."""
     try:
         with Image.open(path) as img:
             img.load()
             w, h = img.size
         if w < MIN_IMAGE_SIZE or h < MIN_IMAGE_SIZE:
-            return False, "troppo piccola (probabile avatar/icona)"
+            return False, tr("too small (probably an avatar/icon)")
         return True, ""
     except Exception as e:
         return False, str(e)
 
 
 # --- SCROLL ---
-WHEEL_NOTCH_PX = 60       # pixel per uno "scatto" di rotella del mouse
-MAC_PX_PER_DELTA = 5.0    # pixel per unità di delta su macOS
+WHEEL_NOTCH_PX = 60       # pixels per mouse wheel notch
+MAC_PX_PER_DELTA = 5.0    # pixels per delta unit on macOS
 
-# --- PALETTE COLORI (dark moderno) ---
+# --- COLOUR PALETTE (modern dark) ---
 BG_MAIN = "#0c0c0f"
 BG_SURF = "#141418"
 BG_FIELD = "#1b1b21"
@@ -332,9 +358,9 @@ DANGER = "#ef4444"
 DANGER_HOVER = "#dc2626"
 SUCCESS = "#22c55e"
 
-# --- CATALOGO ---
-CARD_W = 164              # larghezza scheda articolo
-CARD_IMG_H = 218          # altezza foto (circa 3:4 come su Vinted)
+# --- CATALOG ---
+CARD_W = 164              # item card width
+CARD_IMG_H = 218          # photo height (about 3:4 like on Vinted)
 CARD_GAP = 16
 CARD_BG = "#16161b"
 CARD_RADIUS = 12
@@ -347,13 +373,133 @@ SETTINGS_PATH = os.path.join(base_dir, ".relisto_settings.json")
 
 
 def resource_path(relative):
-    """Percorso di un file incluso nell'app (funziona anche dentro il bundle PyInstaller)."""
+    """Path of a file shipped with the app (works inside the PyInstaller bundle too)."""
     root = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(root, relative)
 
 AUTHOR = "lilsusanoo"
 AUTHOR_URL = "https://dondo.info"
 AUTHOR_SITE_LABEL = "dondo.info"
+
+# --- LANGUAGE ---------------------------------------------------------------
+# English is the source language; IT holds the Italian translations.
+LANGUAGES = {"en": "EN", "it": "IT"}
+LANG = "en"
+
+IT = {
+    "Catalog": "Catalogo",
+    "Extract": "Estrai",
+    "Details": "Dettaglio",
+    "+  New listing": "+  Nuovo annuncio",
+    "Archive": "Archivio",
+    "Made by {author}  ·  {site} ↗": "Creato da {author}  ·  {site} ↗",
+    "Save a listing": "Estrai un annuncio",
+    "Paste the link of one of your Vinted listings: photos, texts, price and details\n"
+    "are kept here, ready for when you put the item up for sale again.":
+        "Incolla il link di un tuo annuncio Vinted: foto, testi, prezzo e dettagli\n"
+        "restano salvati qui, pronti quando vuoi rimettere in vendita l'articolo.",
+    "Paste": "Incolla",
+    "Ready.": "Pronto.",
+    "Activity": "Attività",
+    "Clear": "Pulisci",
+    "←  Catalog": "←  Catalogo",
+    "Delete": "Elimina",
+    "Open folder": "Apri cartella",
+    "Open on Vinted ↗": "Apri su Vinted ↗",
+    "TITLE": "TITOLO",
+    "Copy": "Copia",
+    "Title copied": "Titolo copiato",
+    "DESCRIPTION": "DESCRIZIONE",
+    "Save changes": "Salva modifiche",
+    "Description copied": "Descrizione copiata",
+    "No item to show": "Nessun articolo da mostrare",
+    "Copied to clipboard": "Copiato negli appunti",
+    "No changes to save": "Nessuna modifica da salvare",
+    "[+] Changes saved: {name}": "[+] Modifiche salvate: {name}",
+    "Changes saved": "Modifiche salvate",
+    "[-] Save error: {e}": "[-] Errore salvataggio: {e}",
+    "Error": "Errore",
+    "Could not save the changes:\n{e}": "Impossibile salvare le modifiche:\n{e}",
+    "Move this listing to the trash?\n\n{name}": "Spostare nel cestino questo annuncio?\n\n{name}",
+    "Permanently delete this listing?\n\n{name}":
+        "Sei sicuro di voler eliminare definitivamente questo annuncio?\n\n{name}",
+    "Confirm deletion": "Conferma eliminazione",
+    "[!] Listing deleted: {name}": "[!] Annuncio eliminato: {name}",
+    "Listing deleted": "Annuncio eliminato",
+    "[-] Error while deleting: {e}": "[-] Errore durante l'eliminazione: {e}",
+    "Could not delete the folder:\n{e}": "Impossibile eliminare la cartella:\n{e}",
+    "[-] Could not open the preview: {e}": "[-] Impossibile aprire l'anteprima: {e}",
+    "[-] Could not read info.txt: {e}": "[-] Errore lettura info.txt: {e}",
+    "Price and details not available: extract the listing again to save them.":
+        "Prezzo e dettagli non disponibili: estrai di nuovo l'annuncio per salvarli.",
+    "Could not load the images: {e}": "Errore nel caricamento delle immagini: {e}",
+    "Your saved listings: photos, texts and details ready for when you sell an item again.":
+        "I tuoi annunci salvati: foto, testi e dettagli pronti quando rimetti in vendita un articolo.",
+    "⌕  Search by title, brand, size…": "⌕  Cerca per titolo, marca, taglia…",
+    "{n} photos": "{n} foto",
+    "1 photo": "1 foto",
+    "  {shown} of {total}  ": "  {shown} di {total}  ",
+    "  {n} items  ": "  {n} articoli  ",
+    "  1 item  ": "  1 articolo  ",
+    "No item matches your search.": "Nessun articolo corrisponde alla ricerca.",
+    "No saved listings yet.\n\n"
+    "1.  Press \"+ New listing\" and paste the link of one of your Vinted listings\n"
+    "2.  Relisto saves its photos, title, description, price and details\n"
+    "3.  When you sell the item again, copy texts and photos from here":
+        "Nessun annuncio salvato.\n\n"
+        "1.  Premi \"+ Nuovo annuncio\" e incolla il link di un tuo annuncio Vinted\n"
+        "2.  Relisto salva foto, titolo, descrizione, prezzo e dettagli\n"
+        "3.  Quando rimetti in vendita l'articolo, copia testi e foto da qui",
+    "No saved listings.": "Nessun annuncio salvato.",
+    "[-] Error: please enter a URL.": "[-] Errore: inserisci un URL.",
+    "[-] Error: this does not look like a Vinted link.": "[-] Errore: l'URL non sembra un link di Vinted.",
+    "\n[*] Reading: {url}...": "\n[*] Lettura: {url}...",
+    "Extracting…": "Estrazione…",
+    "[+] Title: {title}": "[+] Titolo: {title}",
+    "[-] No images found in the page.": "[-] Nessuna immagine trovata nella pagina.",
+    "[+] Details: {info}": "[+] Dettagli: {info}",
+    "[+] Found {n} images. Downloading...": "[+] Trovate {n} immagini. Download in corso...",
+    "   [-] Image {i}: invalid response.": "   [-] Immagine {i}: risposta non valida.",
+    "   [+] Image {i} saved.": "   [+] Immagine {i} salvata.",
+    "   [-] Image {i} skipped: {err}": "   [-] Immagine {i} scartata: {err}",
+    "   [-] Image {i} not downloaded: {e}": "   [-] Immagine {i} non scaricata: {e}",
+    "\n[!!!] DONE: {saved}/{total} images saved. [!!!]":
+        "\n[!!!] COMPLETATO: {saved}/{total} immagini salvate. [!!!]",
+    "Listing saved · {n} photos": "Annuncio salvato · {n} foto",
+    "[-] HTTP error: {code}": "[-] Errore HTTP: {code}",
+    "[-] ERROR: {e}": "[-] ERRORE: {e}",
+    "too small (probably an avatar/icon)": "troppo piccola (probabile avatar/icona)",
+}
+
+
+def tr(text, **kw):
+    """Translate an English UI string into the current language."""
+    if LANG == "it":
+        text = IT.get(text, text)
+    return text.format(**kw) if kw else text
+
+
+def detect_language():
+    """Italian if the system is set to Italian, English otherwise."""
+    candidates = []
+    if sys.platform == "darwin":
+        try:
+            out = subprocess.run(["defaults", "read", "-g", "AppleLanguages"],
+                                 capture_output=True, text=True, timeout=2).stdout
+            m = re.search(r'"?([A-Za-z]{2})[-_]', out)
+            if m:
+                candidates.append(m.group(1))
+        except Exception:
+            pass
+    candidates += [os.environ.get(k, "") for k in ("LC_ALL", "LC_MESSAGES", "LANG")]
+    try:
+        candidates.append(locale.getlocale()[0] or "")
+    except Exception:
+        pass
+    for c in candidates:
+        if c:
+            return "it" if c.lower().startswith("it") else "en"
+    return "en"
 
 UI_FONT = "Helvetica"
 MONO_FONT = "Courier"
@@ -362,7 +508,7 @@ ctk.set_appearance_mode("Dark")
 
 
 def pick_fonts(root):
-    """Font di sistema moderni (SF Pro su Mac, Segoe UI su Windows)."""
+    """Modern system fonts (SF Pro on Mac, Segoe UI on Windows)."""
     global UI_FONT, MONO_FONT
     try:
         families = set(tkfont.families(root))
@@ -405,7 +551,7 @@ def save_settings(data):
 
 
 def round_corners(img, radius, bg):
-    """Angoli arrotondati su sfondo pieno (CTkLabel non ritaglia le immagini)."""
+    """Rounded corners on a solid background (CTkLabel does not clip images)."""
     mask = Image.new("L", img.size, 0)
     ImageDraw.Draw(mask).rounded_rectangle(
         (0, 0, img.size[0] - 1, img.size[1] - 1), radius=radius, fill=255
@@ -416,7 +562,7 @@ def round_corners(img, radius, bg):
 
 
 class PageView:
-    """Pagine a schermo intero con la stessa interfaccia di CTkTabview (set/get/tab)."""
+    """Full-size pages with the same interface as CTkTabview (set/get/tab)."""
 
     def __init__(self, master, on_change=None):
         self.master = master
@@ -473,7 +619,7 @@ def primary_button(master, text, command, width=0, height=36, **kw):
     return ctk.CTkButton(master, **opts)
 
 
-NAV_LABELS = {"Catalogo": "Catalogo", "Estrazione": "Estrai", "Visualizzatore": "Dettaglio"}
+NAV_LABELS = {"catalog": "Catalog", "extract": "Extract", "detail": "Details"}
 
 
 class VintedApp(ctk.CTk):
@@ -498,16 +644,20 @@ class VintedApp(ctk.CTk):
                 self.ui_logo = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(72, 72))
                 self.small_logo = ctk.CTkImage(light_image=pil_logo, dark_image=pil_logo, size=(28, 28))
         except Exception as e:
-            print(f"Errore caricamento logo: {e}")
+            print(f"Could not load logo: {e}")
 
         self.settings = load_settings()
+        global LANG
+        LANG = self.settings.get("language") or detect_language()
+        if LANG not in LANGUAGES:
+            LANG = "en"
         self.current_folder_path = ""
-        self._loaded_info = None          # (titolo, descrizione) come letti da disco
+        self._loaded_info = None          # (title, description) as read from disk
         self.thumbnail_cache = []
         self.folder_buttons = []
         self.folder_paths = []
         self.selected_folder_index = -1
-        self._load_gen = 0                # per ignorare thumbnail di refresh vecchi
+        self._load_gen = 0                # to ignore thumbnails from stale reloads
         self._preview_win = None
         self.catalog_cards = []           # dict: path, card, img, title, search
         self.catalog_images = []
@@ -534,9 +684,9 @@ class VintedApp(ctk.CTk):
         self.main_frame.grid(row=0, column=1, sticky="nsew")
 
         self.tabview = PageView(self.main_frame, on_change=self._on_page_change)
-        self._build_catalog_tab(self.tabview.add("Catalogo"))
-        self._build_extraction_page(self.tabview.add("Estrazione"))
-        self._build_detail_page(self.tabview.add("Visualizzatore"))
+        self._build_catalog_tab(self.tabview.add("catalog"))
+        self._build_extraction_page(self.tabview.add("extract"))
+        self._build_detail_page(self.tabview.add("detail"))
 
         self.toast_label = ctk.CTkLabel(
             self, text="", font=ui_font(13, "bold"), fg_color=BG_FIELD,
@@ -547,14 +697,14 @@ class VintedApp(ctk.CTk):
             self.sidebar_frame.grid_remove()
         self._update_sidebar_toggle()
 
-        self.tabview.set("Catalogo")
+        self.tabview.set("catalog")
         self._setup_scrolling()
         self._bind_keys()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.load_folders()
 
     # ------------------------------------------------------------------
-    # Struttura: barra superiore, barra laterale, pagine
+    # Layout: top bar, sidebar, pages
     # ------------------------------------------------------------------
     def _build_topbar(self):
         bar = ctk.CTkFrame(self, height=TOPBAR_H, fg_color=BG_SURF, corner_radius=0)
@@ -582,7 +732,7 @@ class VintedApp(ctk.CTk):
         self.nav_buttons = {}
         for key, label in NAV_LABELS.items():
             b = ctk.CTkButton(
-                nav, text=label, width=96, height=32, corner_radius=9,
+                nav, text=tr(label), width=96, height=32, corner_radius=9,
                 font=ui_font(13, "bold"), fg_color="transparent",
                 hover_color=BTN_HOVER, text_color=TEXT_MUTED,
                 command=lambda k=key: self._nav_to(k)
@@ -590,10 +740,20 @@ class VintedApp(ctk.CTk):
             b.pack(side="left", padx=3, pady=3)
             self.nav_buttons[key] = b
 
-        self.new_btn = primary_button(bar, "+  Nuovo annuncio", self.go_to_extraction, height=34)
-        self.new_btn.grid(row=0, column=4, padx=(0, 16))
+        self.lang_switch = ctk.CTkSegmentedButton(
+            bar, values=list(LANGUAGES.values()), command=self._on_language_change,
+            height=30, width=86, font=ui_font(12, "bold"), corner_radius=9,
+            fg_color=BG_MAIN, selected_color=ACCENT_SOFT, selected_hover_color=ACCENT_SOFT,
+            unselected_color=BG_MAIN, unselected_hover_color=BTN_HOVER,
+            text_color=TEXT_MAIN
+        )
+        self.lang_switch.set(LANGUAGES[LANG])
+        self.lang_switch.grid(row=0, column=4, padx=(0, 12))
 
-        # linea di separazione sotto la barra
+        self.new_btn = primary_button(bar, tr("+  New listing"), self.go_to_extraction, height=34)
+        self.new_btn.grid(row=0, column=5, padx=(0, 16))
+
+        # separator line under the bar
         ctk.CTkFrame(self, height=1, fg_color=BORDER, corner_radius=0).grid(
             row=0, column=0, sticky="sew"
         )
@@ -607,7 +767,7 @@ class VintedApp(ctk.CTk):
         self.sidebar_frame.grid_rowconfigure(1, weight=1)
         self.sidebar_frame.grid_columnconfigure(0, weight=1)
 
-        # bordo destro
+        # right border
         ctk.CTkFrame(self.sidebar_frame, width=1, fg_color=BORDER, corner_radius=0).place(
             relx=1.0, rely=0, relheight=1.0, anchor="ne"
         )
@@ -616,7 +776,7 @@ class VintedApp(ctk.CTk):
         head.grid(row=0, column=0, sticky="ew", padx=(18, 12), pady=(18, 8))
 
         self.sidebar_title = ctk.CTkLabel(
-            head, text="Archivio", font=ui_font(15, "bold"), text_color=TEXT_MAIN
+            head, text=tr("Archive"), font=ui_font(15, "bold"), text_color=TEXT_MAIN
         )
         self.sidebar_title.pack(side="left")
 
@@ -656,9 +816,9 @@ class VintedApp(ctk.CTk):
         self.folder_list.bind("<Configure>", self._update_folder_scrollregion)
         self.folder_canvas.bind("<Configure>", self._resize_folder_list_width)
 
-        # crediti
+        # credits
         self.credits_label = ctk.CTkLabel(
-            self.sidebar_frame, text=f"Creato da {AUTHOR}  ·  {AUTHOR_SITE_LABEL} ↗",
+            self.sidebar_frame, text=tr("Made by {author}  ·  {site} ↗", author=AUTHOR, site=AUTHOR_SITE_LABEL),
             font=ui_font(11), text_color=TEXT_MUTED, cursor="hand2"
         )
         self.credits_label.grid(row=2, column=0, sticky="w", padx=18, pady=(0, 14))
@@ -682,12 +842,12 @@ class VintedApp(ctk.CTk):
             self.logo_label = ctk.CTkLabel(hero, text="", image=self.ui_logo)
             self.logo_label.pack(pady=(0, 10))
         self.title_label = ctk.CTkLabel(
-            hero, text="Estrai un annuncio", font=ui_font(26, "bold"), text_color=TEXT_MAIN
+            hero, text=tr("Save a listing"), font=ui_font(26, "bold"), text_color=TEXT_MAIN
         )
         self.title_label.pack()
         ctk.CTkLabel(
-            hero, text="Incolla il link di un tuo annuncio Vinted: foto, testi, prezzo e dettagli\n"
-                       "restano salvati qui, pronti quando vuoi rimettere in vendita l'articolo.",
+            hero, text=tr("Paste the link of one of your Vinted listings: photos, texts, price and details\n"
+                          "are kept here, ready for when you put the item up for sale again."),
             font=ui_font(14), text_color=TEXT_MUTED, justify="center"
         ).pack(pady=(6, 22))
 
@@ -706,11 +866,11 @@ class VintedApp(ctk.CTk):
         )
         self.url_entry.grid(row=0, column=0, sticky="ew")
 
-        self.paste_btn = ghost_button(row, "Incolla", self.paste_url, width=84, height=44)
+        self.paste_btn = ghost_button(row, tr("Paste"), self.paste_url, width=84, height=44)
         self.paste_btn.grid(row=0, column=1, padx=(8, 0))
 
         self.start_button = primary_button(
-            row, "Estrai", self.start_processing, width=110, height=44,
+            row, tr("Extract"), self.start_processing, width=110, height=44,
             font=ui_font(14, "bold")
         )
         self.start_button.grid(row=0, column=2, padx=(8, 0))
@@ -722,17 +882,17 @@ class VintedApp(ctk.CTk):
         self.progress.grid(row=1, column=0, sticky="ew", padx=16)
 
         self.status_label = ctk.CTkLabel(
-            card, text="Pronto.", font=ui_font(12), text_color=TEXT_MUTED, anchor="w"
+            card, text=tr("Ready."), font=ui_font(12), text_color=TEXT_MUTED, anchor="w"
         )
         self.status_label.grid(row=2, column=0, sticky="ew", padx=16, pady=(6, 12))
 
         log_head = ctk.CTkFrame(col, fg_color="transparent")
         log_head.grid(row=3, column=0, sticky="ew", pady=(22, 6))
         self.console_label = ctk.CTkLabel(
-            log_head, text="Attività", font=ui_font(14, "bold"), text_color=TEXT_MAIN
+            log_head, text=tr("Activity"), font=ui_font(14, "bold"), text_color=TEXT_MAIN
         )
         self.console_label.pack(side="left")
-        ghost_button(log_head, "Pulisci", self.clear_log, width=70, height=28,
+        ghost_button(log_head, tr("Clear"), self.clear_log, width=70, height=28,
                      font=ui_font(12)).pack(side="right")
 
         self.log_box = ctk.CTkTextbox(
@@ -743,7 +903,7 @@ class VintedApp(ctk.CTk):
         self.log_box.grid(row=4, column=0, sticky="nsew")
 
     def _build_detail_page(self, outer):
-        # Pagina scorrevole: canvas + frame interno
+        # Scrollable page: canvas + inner frame
         outer.grid_columnconfigure(0, weight=1)
         outer.grid_rowconfigure(0, weight=1)
         self.detail_container = ctk.CTkFrame(outer, fg_color="transparent")
@@ -770,30 +930,30 @@ class VintedApp(ctk.CTk):
         page.grid_rowconfigure(5, weight=1)
         pad = 28
 
-        # --- barra azioni ---
+        # --- action bar ---
         actions = ctk.CTkFrame(page, fg_color="transparent")
         actions.grid(row=0, column=0, sticky="ew", padx=pad, pady=(20, 14))
 
         ctk.CTkButton(
-            actions, text="←  Catalogo", width=110, height=32, fg_color="transparent",
+            actions, text=tr("←  Catalog"), width=110, height=32, fg_color="transparent",
             hover_color=BTN_HOVER, text_color=TEXT_MUTED, corner_radius=10,
-            font=ui_font(13, "bold"), command=lambda: self.tabview.set("Catalogo")
+            font=ui_font(13, "bold"), command=lambda: self.tabview.set("catalog")
         ).pack(side="left")
 
         self.btn_delete_folder = ghost_button(
-            actions, "Elimina", self.delete_current_folder, width=86,
+            actions, tr("Delete"), self.delete_current_folder, width=86,
             text_color=DANGER, border_color="#4a2020", hover_color="#2a1515"
         )
         self.btn_delete_folder.pack(side="right")
 
-        self.btn_open_folder = ghost_button(actions, "Apri cartella", self.open_current_folder, width=110)
+        self.btn_open_folder = ghost_button(actions, tr("Open folder"), self.open_current_folder, width=110)
         self.btn_open_folder.pack(side="right", padx=(0, 8))
 
-        self.btn_open_vinted = ghost_button(actions, "Apri su Vinted ↗", self.open_on_vinted, width=130)
+        self.btn_open_vinted = ghost_button(actions, tr("Open on Vinted ↗"), self.open_on_vinted, width=130)
         self._open_vinted_packed = False
         self._actions_frame = actions
 
-        # --- galleria foto ---
+        # --- photo gallery ---
         self.images_container = ctk.CTkFrame(
             page, fg_color=BG_SURF, border_color=BORDER, border_width=1, corner_radius=16
         )
@@ -821,15 +981,15 @@ class VintedApp(ctk.CTk):
             lambda e: self.images_canvas.configure(scrollregion=self.images_canvas.bbox("all"))
         )
 
-        # --- titolo ---
+        # --- title ---
         title_head = ctk.CTkFrame(page, fg_color="transparent")
         title_head.grid(row=2, column=0, sticky="ew", padx=pad, pady=(20, 6))
         self.lbl_view_title = ctk.CTkLabel(
-            title_head, text="TITOLO", font=ui_font(11, "bold"), text_color=TEXT_MUTED
+            title_head, text=tr("TITLE"), font=ui_font(11, "bold"), text_color=TEXT_MUTED
         )
         self.lbl_view_title.pack(side="left")
         self.btn_copy_title = ghost_button(
-            title_head, "Copia", lambda: self.copy_to_clipboard(self.view_title.get(), "Titolo copiato"),
+            title_head, tr("Copy"), lambda: self.copy_to_clipboard(self.view_title.get(), tr("Title copied")),
             width=64, height=26, font=ui_font(12)
         )
         self.btn_copy_title.pack(side="right")
@@ -840,20 +1000,20 @@ class VintedApp(ctk.CTk):
         )
         self.view_title.grid(row=3, column=0, sticky="ew", padx=pad)
 
-        # --- prezzo + dettagli ---
+        # --- price + details ---
         details_frame = ctk.CTkFrame(page, fg_color="transparent")
         details_frame.grid(row=4, column=0, sticky="ew", padx=pad, pady=(12, 0))
         self.view_price = ctk.CTkLabel(
             details_frame, text="", font=ui_font(22, "bold"), text_color=TEXT_MAIN
         )
         self.view_price.pack(side="left")
-        # height=1: un CTkFrame vuoto altrimenti occupa 200x200 px
+        # height=1: otherwise an empty CTkFrame takes 200x200 px
         self.view_chips = ctk.CTkFrame(details_frame, fg_color="transparent", width=1, height=1)
         self.view_details = ctk.CTkLabel(
             details_frame, text="", font=ui_font(13), text_color=TEXT_MUTED
         )
 
-        # --- descrizione ---
+        # --- description ---
         desc_wrap = ctk.CTkFrame(page, fg_color="transparent")
         desc_wrap.grid(row=5, column=0, sticky="nsew", padx=pad, pady=(18, 24))
         desc_wrap.grid_columnconfigure(0, weight=1)
@@ -862,17 +1022,17 @@ class VintedApp(ctk.CTk):
         desc_head = ctk.CTkFrame(desc_wrap, fg_color="transparent")
         desc_head.grid(row=0, column=0, sticky="ew", pady=(0, 6))
         self.lbl_view_desc = ctk.CTkLabel(
-            desc_head, text="DESCRIZIONE", font=ui_font(11, "bold"), text_color=TEXT_MUTED
+            desc_head, text=tr("DESCRIPTION"), font=ui_font(11, "bold"), text_color=TEXT_MUTED
         )
         self.lbl_view_desc.pack(side="left")
         self.btn_save = primary_button(
-            desc_head, "Salva modifiche", lambda: self.save_current_info(silent=False),
+            desc_head, tr("Save changes"), lambda: self.save_current_info(silent=False),
             width=130, height=28, font=ui_font(12, "bold")
         )
         self.btn_save.pack(side="right")
         self.btn_copy_desc = ghost_button(
-            desc_head, "Copia",
-            lambda: self.copy_to_clipboard(self.view_desc.get("1.0", "end-1c"), "Descrizione copiata"),
+            desc_head, tr("Copy"),
+            lambda: self.copy_to_clipboard(self.view_desc.get("1.0", "end-1c"), tr("Description copied")),
             width=64, height=28, font=ui_font(12)
         )
         self.btn_copy_desc.pack(side="right", padx=(0, 8))
@@ -885,7 +1045,7 @@ class VintedApp(ctk.CTk):
         self.view_desc.grid(row=1, column=0, sticky="nsew")
 
     def _update_detail_scroll(self, event=None):
-        """Il contenuto riempie la finestra se c'è spazio, altrimenti scorre."""
+        """Content fills the window when there is room, otherwise it scrolls."""
         cw = self.detail_canvas.winfo_width()
         ch = self.detail_canvas.winfo_height()
         if cw <= 1:
@@ -895,15 +1055,15 @@ class VintedApp(ctk.CTk):
         self.detail_canvas.configure(scrollregion=(0, 0, cw, h))
 
     # ------------------------------------------------------------------
-    # Navigazione, barra laterale, notifiche
+    # Navigation, sidebar, notifications
     # ------------------------------------------------------------------
     def _nav_to(self, key):
-        if key == "Visualizzatore" and not self.current_folder_path:
+        if key == "detail" and not self.current_folder_path:
             if self.folder_paths:
                 idx = self.selected_folder_index if self.selected_folder_index >= 0 else 0
                 self.show_folder_details(self.folder_paths[idx])
             else:
-                self.toast("Nessun articolo da mostrare")
+                self.toast(tr("No item to show"))
             return
         self.tabview.set(key)
 
@@ -914,8 +1074,26 @@ class VintedApp(ctk.CTk):
             else:
                 btn.configure(fg_color="transparent", text_color=TEXT_MUTED, hover_color=BTN_HOVER)
 
+    def _on_language_change(self, value):
+        lang = next((k for k, v in LANGUAGES.items() if v == value), "en")
+        if lang == LANG:
+            return
+        self.settings["language"] = lang
+        save_settings(self.settings)
+        self.save_current_info(silent=True)
+        self.after(80, self._restart)
+
+    def _restart(self):
+        """Relaunch the app so every text is rebuilt in the new language."""
+        self.destroy()
+        if getattr(sys, "frozen", False):
+            os.execv(sys.executable, [sys.executable])
+        else:
+            script = os.path.abspath(__file__)
+            os.execv(sys.executable, [sys.executable, script])
+
     def go_to_extraction(self):
-        self.tabview.set("Estrazione")
+        self.tabview.set("extract")
         self.after(50, self.url_entry.focus_set)
 
     def _update_sidebar_toggle(self):
@@ -929,8 +1107,8 @@ class VintedApp(ctk.CTk):
         save_settings(self.settings)
         self._update_sidebar_toggle()
 
-        # Apertura/chiusura immediata: in Tk ogni passo di un'animazione
-        # ridisegna l'intera finestra (~100 ms), quindi risulterebbe a scatti.
+        # Instant open/close: in Tk every animation step redraws the whole
+        # window (~100 ms), so an animation would stutter.
         if self.sidebar_open:
             self.sidebar_frame.grid()
         else:
@@ -956,7 +1134,7 @@ class VintedApp(ctk.CTk):
         self.log_box.configure(state="disabled")
 
     # ------------------------------------------------------------------
-    # Utilità
+    # Utilities
     # ------------------------------------------------------------------
     @staticmethod
     def _is_descendant(widget, ancestor):
@@ -980,7 +1158,7 @@ class VintedApp(ctk.CTk):
         self.destroy()
 
     # ------------------------------------------------------------------
-    # Tastiera
+    # Keyboard
     # ------------------------------------------------------------------
     def _bind_keys(self):
         self.bind_all("<Up>", self._select_previous_folder, add="+")
@@ -1003,7 +1181,7 @@ class VintedApp(ctk.CTk):
             self._open_first_catalog_match()
             return "break"
 
-        # Nei campi del visualizzatore Invio deve funzionare normalmente (a capo)
+        # In the detail fields Enter must work normally (new line)
         if self._focus_in(self.view_title, self.view_desc):
             return None
 
@@ -1032,22 +1210,22 @@ class VintedApp(ctk.CTk):
         return "break"
 
     # ------------------------------------------------------------------
-    # Scroll unificato (mouse, trackpad, rotella)
+    # Unified scrolling (mouse, trackpad, wheel)
     # ------------------------------------------------------------------
     def _setup_scrolling(self):
         self._wheel_acc = {"x": 0.0, "y": 0.0}
         for seq in ("<MouseWheel>", "<Shift-MouseWheel>",
                     "<Button-4>", "<Button-5>", "<Button-6>", "<Button-7>"):
             self.bind_all(seq, self._on_wheel, add="+")
-        # Tk 9 su macOS: lo scroll a due dita del trackpad arriva come
-        # <TouchpadScroll> (delta in pixel, dx/dy impacchettati in %D)
+        # Tk 9 on macOS: two-finger trackpad scrolling arrives as
+        # <TouchpadScroll> (pixel deltas, dx/dy packed into %D)
         try:
             self.bind_all("<TouchpadScroll>", self._on_touchpad_scroll, add="+")
         except tk.TclError:
-            pass  # Tk 8.x: evento non esistente, il trackpad usa <MouseWheel>
+            pass  # Tk 8.x: no such event, the trackpad uses <MouseWheel>
 
     def _find_scroll_targets(self, widget):
-        """Aree scorrevoli sotto il puntatore, dalla più interna alla più esterna."""
+        """Scrollable areas under the pointer, innermost first."""
         targets = []
         while widget is not None:
             if widget is self.view_desc:
@@ -1056,7 +1234,7 @@ class VintedApp(ctk.CTk):
                 except Exception:
                     first, last = 0.0, 1.0
                 if first > 0.0 or last < 1.0:
-                    return None  # la descrizione lunga scorre da sola
+                    return None  # a long description scrolls by itself
             elif widget is self.folder_container:
                 targets.append((self.folder_canvas, "y"))
             elif widget is self.images_container:
@@ -1073,7 +1251,7 @@ class VintedApp(ctk.CTk):
         for canvas, orient in targets:
             if orient == want and self._can_scroll(canvas, orient):
                 return canvas, orient
-        # gesto verticale sopra una striscia orizzontale senza pagina da scorrere
+        # vertical gesture over a horizontal strip with no page to scroll
         if not horizontal:
             for canvas, orient in targets:
                 if orient == "x" and self._can_scroll(canvas, orient):
@@ -1169,7 +1347,7 @@ class VintedApp(ctk.CTk):
         self.folder_canvas.itemconfigure(self.folder_window, width=event.width)
 
     # ------------------------------------------------------------------
-    # Selezione nella lista
+    # List selection
     # ------------------------------------------------------------------
     def _set_selected_folder(self, index, open_item=False):
         if not self.folder_buttons:
@@ -1210,13 +1388,13 @@ class VintedApp(ctk.CTk):
             pass
 
     # ------------------------------------------------------------------
-    # Appunti, cartella, eliminazione, salvataggio
+    # Clipboard, folder, delete, save
     # ------------------------------------------------------------------
-    def copy_to_clipboard(self, text, message="Copiato negli appunti"):
+    def copy_to_clipboard(self, text, message=None):
         self.clipboard_clear()
         self.clipboard_append(text)
         self.update()
-        self.toast(message, "ok")
+        self.toast(message or tr("Copied to clipboard"), "ok")
 
     def paste_url(self):
         try:
@@ -1242,7 +1420,7 @@ class VintedApp(ctk.CTk):
             webbrowser.open(self._current_url)
 
     def save_current_info(self, silent=True):
-        """Salva titolo e descrizione in info.txt se sono cambiati."""
+        """Save title and description to info.txt if they changed."""
         path = self.current_folder_path
         if not path or not os.path.isdir(path):
             return
@@ -1254,19 +1432,19 @@ class VintedApp(ctk.CTk):
 
         if self._loaded_info == (title, desc):
             if not silent:
-                self.toast("Nessuna modifica da salvare")
+                self.toast(tr("No changes to save"))
             return
         try:
             write_info(path, title, desc)
             self._loaded_info = (title, desc)
-            self.log(f"[+] Modifiche salvate: {os.path.basename(path)}")
+            self.log(tr("[+] Changes saved: {name}", name=os.path.basename(path)))
             if not silent:
-                self.toast("Modifiche salvate", "ok")
+                self.toast(tr("Changes saved"), "ok")
             self._refresh_card_title(path, title)
         except Exception as e:
-            self.log(f"[-] Errore salvataggio: {e}")
+            self.log(tr("[-] Save error: {e}", e=e))
             if not silent:
-                messagebox.showerror("Errore", f"Impossibile salvare le modifiche:\n{e}")
+                messagebox.showerror(tr("Error"), tr("Could not save the changes:\n{e}", e=e))
 
     def delete_current_folder(self):
         if not self.current_folder_path or not os.path.exists(self.current_folder_path):
@@ -1274,15 +1452,15 @@ class VintedApp(ctk.CTk):
 
         folder_name = os.path.basename(self.current_folder_path)
         if send2trash:
-            msg = f"Spostare nel cestino questo annuncio?\n\n{folder_name}"
+            msg = tr("Move this listing to the trash?\n\n{name}", name=folder_name)
         else:
-            msg = f"Sei sicuro di voler eliminare definitivamente questo annuncio?\n\n{folder_name}"
+            msg = tr("Permanently delete this listing?\n\n{name}", name=folder_name)
 
-        if not messagebox.askyesno("Conferma Eliminazione", msg):
+        if not messagebox.askyesno(tr("Confirm deletion"), msg):
             return
 
         try:
-            # libera eventuali riferimenti alle immagini prima di cancellare
+            # release image references before deleting
             for widget in self.images_frame.winfo_children():
                 widget.destroy()
             self.update_idletasks()
@@ -1291,7 +1469,7 @@ class VintedApp(ctk.CTk):
                 send2trash(os.path.abspath(self.current_folder_path))
             else:
                 shutil.rmtree(self.current_folder_path)
-            self.log(f"[!] Annuncio eliminato: {folder_name}")
+            self.log(tr("[!] Listing deleted: {name}", name=folder_name))
 
             self.current_folder_path = ""
             self._loaded_info = None
@@ -1299,15 +1477,15 @@ class VintedApp(ctk.CTk):
             self.view_desc.delete("1.0", "end")
 
             self.load_folders()
-            self.tabview.set("Catalogo")
-            self.toast("Annuncio eliminato", "ok")
+            self.tabview.set("catalog")
+            self.toast(tr("Listing deleted"), "ok")
 
         except Exception as e:
-            self.log(f"[-] Errore durante l'eliminazione: {e}")
-            messagebox.showerror("Errore", f"Impossibile eliminare la cartella:\n{e}")
+            self.log(tr("[-] Error while deleting: {e}", e=e))
+            messagebox.showerror(tr("Error"), tr("Could not delete the folder:\n{e}", e=e))
 
     # ------------------------------------------------------------------
-    # Anteprima ingrandita
+    # Enlarged preview
     # ------------------------------------------------------------------
     def open_preview(self, img_path):
         try:
@@ -1320,7 +1498,7 @@ class VintedApp(ctk.CTk):
             with Image.open(img_path) as im:
                 pil = im.convert("RGB")
         except Exception as e:
-            self.log(f"[-] Impossibile aprire l'anteprima: {e}")
+            self.log(tr("[-] Could not open the preview: {e}", e=e))
             return
 
         max_w = int(self.winfo_screenwidth() * 0.8)
@@ -1336,7 +1514,7 @@ class VintedApp(ctk.CTk):
 
         ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=size)
         lbl = ctk.CTkLabel(win, text="", image=ctk_img)
-        lbl.image = ctk_img  # evita il garbage collector
+        lbl.image = ctk_img  # keep a reference (garbage collector)
         lbl.pack(padx=10, pady=10)
 
         for widget in (win, lbl):
@@ -1345,15 +1523,15 @@ class VintedApp(ctk.CTk):
         win.after(150, win.focus_force)
 
     # ------------------------------------------------------------------
-    # Visualizzatore
+    # Detail page
     # ------------------------------------------------------------------
     def show_folder_details(self, folder_path):
-        # salva automaticamente l'annuncio che stavi modificando
+        # auto-save the listing you were editing
         if folder_path != self.current_folder_path:
             self.save_current_info(silent=True)
 
         self.current_folder_path = folder_path
-        self.tabview.set("Visualizzatore")
+        self.tabview.set("detail")
 
         self.view_title.delete(0, "end")
         self.view_desc.delete("1.0", "end")
@@ -1365,7 +1543,7 @@ class VintedApp(ctk.CTk):
         try:
             title, desc = read_info(folder_path)
         except Exception as e:
-            self.log(f"[-] Errore lettura info.txt: {e}")
+            self.log(tr("[-] Could not read info.txt: {e}", e=e))
             title, desc = "", ""
 
         self.view_title.insert(0, title)
@@ -1377,7 +1555,7 @@ class VintedApp(ctk.CTk):
         self.view_price.configure(text=price)
         for w in self.view_chips.winfo_children():
             w.destroy()
-        for value in (details.get(k, "") for k in ("marca", "taglia", "condizioni", "colore")):
+        for value in (details.get(k, "") for k in ("brand", "size", "condition", "color")):
             if value:
                 ctk.CTkLabel(
                     self.view_chips, text=f"  {value}  ", font=ui_font(12, "bold"),
@@ -1389,7 +1567,7 @@ class VintedApp(ctk.CTk):
             self.view_chips.pack(side="left", padx=(14 if price else 0, 0))
         if not details:
             self.view_details.configure(
-                text="Prezzo e dettagli non disponibili: estrai di nuovo l'annuncio per salvarli."
+                text=tr("Price and details not available: extract the listing again to save them.")
             )
             self.view_details.pack(side="left")
 
@@ -1406,7 +1584,7 @@ class VintedApp(ctk.CTk):
             for img_file in list_photos(folder_path):
                 img_path = os.path.join(folder_path, img_file)
 
-                # with + copia: il file viene chiuso subito (niente blocchi su Windows)
+                # with + copy: the file is closed right away (no locks on Windows)
                 with Image.open(img_path) as im:
                     im = ImageOps.exif_transpose(im)
                     w_size = max(1, int(im.width * photo_h / im.height))
@@ -1420,7 +1598,7 @@ class VintedApp(ctk.CTk):
                 img_label.bind("<Button-1>", lambda e, p=img_path: self.open_preview(p))
 
         except Exception as e:
-            self.log(f"Errore nel caricamento delle immagini: {e}")
+            self.log(tr("Could not load the images: {e}", e=e))
 
         self.update_idletasks()
         self.detail_canvas.yview_moveto(0)
@@ -1435,19 +1613,19 @@ class VintedApp(ctk.CTk):
                 break
 
     # ------------------------------------------------------------------
-    # Catalogo (griglia di schede in stile Vinted)
+    # Catalog (Vinted-style card grid)
     # ------------------------------------------------------------------
     def _build_catalog_tab(self, tab):
         header = ctk.CTkFrame(tab, fg_color="transparent")
         header.pack(fill="x", padx=28, pady=(22, 0))
 
         ctk.CTkLabel(
-            tab, text="I tuoi annunci salvati: foto, testi e dettagli pronti quando rimetti in vendita un articolo.",
+            tab, text=tr("Your saved listings: photos, texts and details ready for when you sell an item again."),
             font=ui_font(13), text_color=TEXT_MUTED, anchor="w"
         ).pack(fill="x", padx=29, pady=(2, 14))
 
         ctk.CTkLabel(
-            header, text="Catalogo", font=ui_font(26, "bold"), text_color=TEXT_MAIN
+            header, text=tr("Catalog"), font=ui_font(26, "bold"), text_color=TEXT_MAIN
         ).pack(side="left")
 
         self.catalog_count = ctk.CTkLabel(
@@ -1457,7 +1635,7 @@ class VintedApp(ctk.CTk):
         self.catalog_count.pack(side="left", padx=(12, 0), pady=(6, 0))
 
         self.catalog_search = ctk.CTkEntry(
-            header, placeholder_text="⌕  Cerca per titolo, marca, taglia…", width=300, height=38,
+            header, placeholder_text=tr("⌕  Search by title, brand, size…"), width=300, height=38,
             font=ui_font(13), fg_color=BG_FIELD,
             border_color=BORDER, border_width=1, corner_radius=19, text_color=TEXT_MAIN
         )
@@ -1498,7 +1676,7 @@ class VintedApp(ctk.CTk):
         self.catalog_canvas.bind("<Configure>", self._on_catalog_resize)
 
     def _on_catalog_resize(self, event):
-        # durante l'animazione della barra laterale la griglia resta ferma
+        # the grid stays still while the sidebar animates
         if self._sidebar_anim is not None:
             return
         self.catalog_canvas.itemconfigure(self.catalog_window, width=event.width)
@@ -1545,7 +1723,7 @@ class VintedApp(ctk.CTk):
             )
             lbl_title.pack(fill="x", padx=12, pady=(8, 0))
 
-            meta_text = summary or f"{n_photos} foto"
+            meta_text = summary or (tr("{n} photos", n=n_photos) if n_photos != 1 else tr("1 photo"))
             if len(meta_text) > 30:
                 meta_text = meta_text[:28].rstrip() + "…"
             lbl_meta = ctk.CTkLabel(
@@ -1563,7 +1741,7 @@ class VintedApp(ctk.CTk):
                 lbl_price.pack(fill="x", padx=12, pady=(4, 10))
                 widgets.append(lbl_price)
 
-            search = " ".join([title, summary, details.get("colore", "")]).lower()
+            search = " ".join([title, summary, details.get("color", "")]).lower()
             item = {"path": path, "card": card, "img": img,
                     "title": title, "search": search, "title_label": lbl_title}
             self.catalog_cards.append(item)
@@ -1613,23 +1791,23 @@ class VintedApp(ctk.CTk):
         visible = self._visible_catalog_cards()
         total = len(self.catalog_cards)
         if total and len(visible) != total:
-            self.catalog_count.configure(text=f"  {len(visible)} di {total}  ")
+            self.catalog_count.configure(text=tr("  {shown} of {total}  ", shown=len(visible), total=total))
         else:
-            self.catalog_count.configure(text=f"  {total} articoli  " if total != 1 else "  1 articolo  ")
+            self.catalog_count.configure(text=tr("  {n} items  ", n=total) if total != 1 else tr("  1 item  "))
 
         for c in range(max(cols, 1) + 1):
             self.catalog_grid.grid_columnconfigure(c, weight=0, minsize=0)
-        # spazio residuo distribuito ai lati: griglia centrata
+        # leftover space split on both sides: centred grid
         self.catalog_grid.grid_columnconfigure(0, weight=1)
         self.catalog_grid.grid_columnconfigure(cols + 1, weight=1)
 
         if not visible:
             self.catalog_empty.configure(
-                text="Nessun articolo corrisponde alla ricerca." if total
-                else "Nessun annuncio salvato.\n\n"
-                     "1.  Premi \"+ Nuovo annuncio\" e incolla il link di un tuo annuncio Vinted\n"
-                     "2.  Relisto salva foto, titolo, descrizione, prezzo e dettagli\n"
-                     "3.  Quando rimetti in vendita l'articolo, copia testi e foto da qui"
+                text=tr("No item matches your search.") if total
+                else tr("No saved listings yet.\n\n"
+                        "1.  Press \"+ New listing\" and paste the link of one of your Vinted listings\n"
+                        "2.  Relisto saves its photos, title, description, price and details\n"
+                        "3.  When you sell the item again, copy texts and photos from here")
             )
             self.catalog_empty.grid(row=0, column=0, columnspan=cols + 2, pady=40)
         else:
@@ -1663,7 +1841,7 @@ class VintedApp(ctk.CTk):
                 break
 
     # ------------------------------------------------------------------
-    # Lista annunci (miniature caricate in background)
+    # Listing list (thumbnails loaded in the background)
     # ------------------------------------------------------------------
     def load_folders(self):
         self._load_gen += 1
@@ -1679,19 +1857,19 @@ class VintedApp(ctk.CTk):
         self.selected_folder_index = -1
 
         try:
-            names = [n for n in os.listdir(ANNUNCI_DIR)
-                     if os.path.isdir(os.path.join(ANNUNCI_DIR, n)) and n.startswith("Output_")]
-            paths = [os.path.join(ANNUNCI_DIR, n) for n in names]
+            names = [n for n in os.listdir(LISTINGS_DIR)
+                     if os.path.isdir(os.path.join(LISTINGS_DIR, n)) and n.startswith("Output_")]
+            paths = [os.path.join(LISTINGS_DIR, n) for n in names]
             paths.sort(key=lambda p: os.path.getctime(p), reverse=True)
         except Exception as e:
-            print(f"Errore lettura cartelle: {e}")
+            print(f"Could not read folders: {e}")
             paths = []
 
         self._build_catalog(paths)
         self.sidebar_count.configure(text=f" {len(paths)} ")
 
         if not paths:
-            ctk.CTkLabel(self.folder_list, text="Nessun annuncio estratto.", text_color=TEXT_MUTED).pack(pady=20)
+            ctk.CTkLabel(self.folder_list, text=tr("No saved listings."), text_color=TEXT_MUTED).pack(pady=20)
             self.update_idletasks()
             self._update_folder_scrollregion()
             return
@@ -1718,7 +1896,7 @@ class VintedApp(ctk.CTk):
         self._update_folder_scrollregion()
         self._set_selected_folder(0)
 
-        # Le miniature arrivano dopo, senza bloccare la finestra
+        # Thumbnails arrive later, without blocking the window
         threading.Thread(target=self._thumb_worker, args=(gen, list(paths)), daemon=True).start()
 
     def _thumb_worker(self, gen, paths):
@@ -1733,7 +1911,7 @@ class VintedApp(ctk.CTk):
                 with Image.open(first) as im:
                     im = ImageOps.exif_transpose(im)
                     thumb = ImageOps.fit(im.convert("RGB"), (100, 100), method=Image.Resampling.LANCZOS)
-                # 2x per schermi Retina
+                # 2x for Retina screens
                 card_img = make_card_image(first, (CARD_W * 2, CARD_IMG_H * 2), CARD_RADIUS * 2, CARD_BG)
                 self.after(0, self._apply_thumb, gen, idx, thumb)
                 self.after(0, self._apply_card_image, gen, folder, card_img)
@@ -1751,7 +1929,7 @@ class VintedApp(ctk.CTk):
             pass
 
     # ------------------------------------------------------------------
-    # Log e progresso
+    # Log and progress
     # ------------------------------------------------------------------
     def log(self, message):
         self.after(0, self._log_safe, message)
@@ -1773,23 +1951,23 @@ class VintedApp(ctk.CTk):
         self.after(0, lambda: self.progress.set(max(0.0, min(1.0, value))))
 
     # ------------------------------------------------------------------
-    # Estrazione
+    # Extraction
     # ------------------------------------------------------------------
     def start_processing(self):
         raw = self.url_entry.get().strip()
         if not raw:
-            self.log("[-] Errore: inserisci un URL.")
+            self.log(tr("[-] Error: please enter a URL."))
             return
 
         url = normalize_vinted_url(raw)
         if not url:
-            self.log("[-] Errore: l'URL non sembra un link di Vinted.")
+            self.log(tr("[-] Error: this does not look like a Vinted link."))
             return
 
-        self.log(f"\n[*] Inizio scansione: {url[:60]}...")
+        self.log(tr("\n[*] Reading: {url}...", url=url[:60]))
         self.url_entry.delete(0, "end")
 
-        self.start_button.configure(state="disabled", text="Estrazione…")
+        self.start_button.configure(state="disabled", text=tr("Extracting…"))
         self.refresh_btn.configure(state="disabled")
         self.progress.set(0)
 
@@ -1803,9 +1981,9 @@ class VintedApp(ctk.CTk):
             self.set_progress(0.1)
 
             title, description = parse_page_meta(response.text)
-            self.log(f"[+] Titolo: {title}")
+            self.log(tr("[+] Title: {title}", title=title))
 
-            # --- ricerca immagini ---
+            # --- find images ---
             raw_urls = re.findall(
                 r'(https://images[0-9a-zA-Z-.]*\.vinted\.net/(?:t|s)/([a-zA-Z0-9_-]+)/[^"\'\s\\]+)',
                 response.text
@@ -1830,16 +2008,16 @@ class VintedApp(ctk.CTk):
             img_urls = img_urls[:MAX_IMAGES]
 
             if not img_urls:
-                self.log("[-] Nessuna immagine trovata nel codice sorgente.")
+                self.log(tr("[-] No images found in the page."))
                 return
 
-            # --- cartella: ID articolo + titolo, così non si sovrascrivono ---
+            # --- folder: item ID + title, so listings never overwrite each other ---
             item_id = extract_item_id(url)
             prefix = f"Output_{item_id}_" if item_id else "Output_"
-            folder_path = os.path.join(ANNUNCI_DIR, f"{prefix}{clean_filename(title)}")
+            folder_path = os.path.join(LISTINGS_DIR, f"{prefix}{clean_filename(title)}")
             os.makedirs(folder_path, exist_ok=True)
 
-            # se l'annuncio esisteva già, riparto da zero con le foto
+            # if the listing already existed, start over with the photos
             for old in list_photos(folder_path):
                 try:
                     os.remove(os.path.join(folder_path, old))
@@ -1853,21 +2031,21 @@ class VintedApp(ctk.CTk):
             write_details(folder_path, details)
             info_line = " · ".join(x for x in (format_price(details), details_summary(details)) if x)
             if info_line:
-                self.log(f"[+] Dettagli: {info_line}")
+                self.log(tr("[+] Details: {info}", info=info_line))
 
-            self.log(f"[+] Localizzate {len(img_urls)} immagini. Download in corso...")
+            self.log(tr("[+] Found {n} images. Downloading...", n=len(img_urls)))
             self.set_progress(0.2)
 
             img_headers = {"Referer": url}
             saved = 0
 
             for idx, img_url in enumerate(img_urls):
-                img_path = os.path.join(folder_path, f"foto_{saved + 1}.jpg")
+                img_path = os.path.join(folder_path, f"photo_{saved + 1}.jpg")
                 try:
                     r = session.get(img_url, headers=img_headers, timeout=20)
                     r.raise_for_status()
                     if 'image' not in r.headers.get('Content-Type', '').lower():
-                        self.log(f"   [-] Immagine {idx + 1}: risposta non valida.")
+                        self.log(tr("   [-] Image {i}: invalid response.", i=idx + 1))
                         continue
 
                     with open(img_path, 'wb') as handler:
@@ -1876,13 +2054,13 @@ class VintedApp(ctk.CTk):
                     ok, err = validate_image(img_path)
                     if ok:
                         saved += 1
-                        self.log(f"   [+] Immagine {idx + 1} salvata.")
+                        self.log(tr("   [+] Image {i} saved.", i=idx + 1))
                     else:
-                        self.log(f"   [-] Immagine {idx + 1} scartata: {err}")
+                        self.log(tr("   [-] Image {i} skipped: {err}", i=idx + 1, err=err))
                         os.remove(img_path)
 
                 except Exception as e:
-                    self.log(f"   [-] Immagine {idx + 1} non scaricata: {e}")
+                    self.log(tr("   [-] Image {i} not downloaded: {e}", i=idx + 1, e=e))
                     if os.path.exists(img_path):
                         try:
                             os.remove(img_path)
@@ -1891,16 +2069,16 @@ class VintedApp(ctk.CTk):
 
                 self.set_progress(0.2 + 0.8 * (idx + 1) / len(img_urls))
 
-            self.log(f"\n[!!!] COMPLETATO: {saved}/{len(img_urls)} immagini salvate. [!!!]")
-            self.after(0, lambda: self.toast(f"Annuncio salvato · {saved} foto", "ok"))
+            self.log(tr("\n[!!!] DONE: {saved}/{total} images saved. [!!!]", saved=saved, total=len(img_urls)))
+            self.after(0, lambda: self.toast(tr("Listing saved · {n} photos", n=saved), "ok"))
             self.after(0, self.load_folders)
 
         except requests.HTTPError as e:
-            self.log(f"[-] Errore HTTP: {e.response.status_code if e.response is not None else e}")
+            self.log(tr("[-] HTTP error: {code}", code=e.response.status_code if e.response is not None else e))
         except Exception as e:
-            self.log(f"[-] ERRORE: {e}")
+            self.log(tr("[-] ERROR: {e}", e=e))
         finally:
-            self.after(0, lambda: self.start_button.configure(state="normal", text="Estrai"))
+            self.after(0, lambda: self.start_button.configure(state="normal", text=tr("Extract")))
             self.after(0, lambda: self.refresh_btn.configure(state="normal"))
 
 
