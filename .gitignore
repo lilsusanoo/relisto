@@ -1,0 +1,17 @@
+# Relisto: si pubblica solo ciò che è elencato qui sotto con "!".
+# Tutto il resto della cartella (annunci, foto personali, build, ambienti
+# Python, vecchi script) resta solo sul tuo computer.
+/*
+!/.gitignore
+!/relisto.py
+!/relisto.spec
+!/requirements.txt
+!/README.md
+!/LICENSE
+
+# Logo e icone dell'app (R di Relisto).
+!/assets/
+
+__pycache__/
+*.pyc
+.DS_Store
